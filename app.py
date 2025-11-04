@@ -1,11 +1,15 @@
+# FPL Web Analyzer - Flask Application with Background Scheduler
 from flask import Flask, render_template, request
 import pandas as pd
 import requests
 from datetime import datetime, timedelta, timezone
+from apscheduler.schedulers.background import BackgroundScheduler
 import time
+import atexit
 
 app = Flask(__name__)
 
+# GitHub repo base URL
 GITHUB_BASE = "https://raw.githubusercontent.com/olbauday/FPL-Elo-Insights/main/data/2025-2026"
 
 # ==================
@@ -16,56 +20,41 @@ class SmartDataCache:
         self.data = None
         self.last_updated = None
         self.current_gw = None
-        # Update times: 5:00 AM and 5:00 PM UTC
-        self.update_hours = [5, 17]  # 5am and 5pm in 24-hour format
+        self.update_hours = [5, 17]  # 5am and 5pm UTC
     
     def get_next_update_time(self):
-        """
-        Calculate when the next data update will happen.
-        Returns the next 5am or 5pm UTC after now.
-        """
+        """Calculate when the next data update will happen"""
         now = datetime.now(timezone.utc)
         
-        # Check if next update is today or tomorrow
         for hour in self.update_hours:
             next_update = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-            
             if next_update > now:
-                # This update time hasn't happened yet today
                 return next_update
         
-        # If we're past both update times today, next update is 5am tomorrow
+        # Next update is 5am tomorrow
         tomorrow = now + timedelta(days=1)
         next_update = tomorrow.replace(hour=self.update_hours[0], minute=0, second=0, microsecond=0)
         return next_update
     
     def should_refresh(self):
-        """
-        Check if we should fetch fresh data.
-        Only refresh if:
-        1. Cache is empty (first load)
-        2. An update time (5am or 5pm) has passed since last fetch
-        """
+        """Check if we should fetch fresh data (only for manual requests)"""
         if self.last_updated is None:
             print("❓ Cache is empty - need to fetch data")
             return True
         
         now = datetime.now(timezone.utc)
         
-        # Check if any update time occurred between last_updated and now
+        # Check if any update time occurred since last fetch
         for hour in self.update_hours:
             update_time_today = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-            
-            # Was there an update time between our last fetch and now?
             if self.last_updated < update_time_today <= now:
                 print(f"⏰ Update time passed ({hour}:00 UTC) - fetching fresh data")
                 return True
         
-        # Check yesterday's update times too (in case we cached at 4pm and it's now 6am next day)
+        # Check yesterday's update times
         yesterday = now - timedelta(days=1)
         for hour in self.update_hours:
             update_time_yesterday = yesterday.replace(hour=hour, minute=0, second=0, microsecond=0)
-            
             if self.last_updated < update_time_yesterday <= now:
                 print(f"⏰ Update time passed ({hour}:00 UTC yesterday) - fetching fresh data")
                 return True
@@ -89,10 +78,14 @@ class SmartDataCache:
         print(f"  Next scheduled update: {next_update.strftime('%Y-%m-%d %H:%M:%S')} UTC")
     
     def get(self):
-        """Get cached data if still valid"""
-        if not self.should_refresh() and self.data is not None:
+        """Get cached data if available"""
+        if self.data is not None:
             return self.data, self.current_gw
         return None, None
+    
+    def is_empty(self):
+        """Check if cache is empty"""
+        return self.data is None
 
 # Initialize smart cache
 cache = SmartDataCache()
@@ -143,19 +136,13 @@ def get_latest_gameweek():
         return 1
 
 # ==================
-# SMART CACHED DATA LOADING
+# DATA LOADING
 # ==================
-def load_fpl_data():
-    """Load FPL data with smart time-based caching"""
-    # Check if we have valid cached data
-    cached_data, cached_gw = cache.get()
-    
-    if cached_data is not None:
-        return cached_data
-    
-    # Cache needs refresh - fetch fresh data
-    print("🔄 Fetching fresh data from GitHub...")
-    
+def fetch_data_from_github():
+    """
+    Fetch and process data from GitHub.
+    This is the core function that both scheduled and on-demand refreshes use.
+    """
     try:
         latest_gw = get_latest_gameweek()
         
@@ -197,14 +184,108 @@ def load_fpl_data():
         load_time = time.time() - start_time
         print(f"✅ Data loaded in {load_time:.2f} seconds")
         
-        # Update cache
-        cache.update(analysis_df, latest_gw)
-        
-        return analysis_df
+        return analysis_df, latest_gw
         
     except Exception as e:
         print(f"❌ Error loading data: {e}")
+        return None, None
+
+def load_fpl_data():
+    """
+    Load FPL data with smart caching.
+    Returns cached data if available, otherwise fetches fresh data.
+    """
+    # Try to get cached data first
+    cached_data, cached_gw = cache.get()
+    
+    if cached_data is not None:
+        # We have cached data - check if it's still valid
+        if not cache.should_refresh():
+            return cached_data
+    
+    # Need to fetch fresh data
+    print("🔄 Fetching fresh data from GitHub...")
+    
+    analysis_df, latest_gw = fetch_data_from_github()
+    
+    if analysis_df is not None:
+        cache.update(analysis_df, latest_gw)
+        return analysis_df
+    else:
+        # If fetch failed but we have old cached data, return that
+        if cached_data is not None:
+            print("⚠️ Fetch failed, using stale cached data")
+            return cached_data
         return pd.DataFrame()
+
+# ==================
+# BACKGROUND SCHEDULER
+# ==================
+def scheduled_data_refresh():
+    """
+    Background job that runs at 5am and 5pm UTC.
+    Fetches data automatically without user interaction.
+    """
+    now = datetime.now(timezone.utc)
+    print(f"\n{'='*60}")
+    print(f"🔄 SCHEDULED REFRESH triggered at {now.strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    print(f"{'='*60}")
+    
+    analysis_df, latest_gw = fetch_data_from_github()
+    
+    if analysis_df is not None:
+        cache.update(analysis_df, latest_gw)
+        print(f"✅ Scheduled refresh completed successfully for GW{latest_gw}")
+    else:
+        print(f"❌ Scheduled refresh failed")
+    
+    print(f"{'='*60}\n")
+
+# Initialize scheduler
+scheduler = BackgroundScheduler(timezone="UTC")
+
+# Schedule jobs for 5:00 AM and 5:00 PM UTC
+scheduler.add_job(
+    func=scheduled_data_refresh,
+    trigger="cron",
+    hour=5,
+    minute=0,
+    id='morning_update',
+    name='Morning Data Update (5:00 AM UTC)'
+)
+
+scheduler.add_job(
+    func=scheduled_data_refresh,
+    trigger="cron",
+    hour=17,
+    minute=0,
+    id='evening_update',
+    name='Evening Data Update (5:00 PM UTC)'
+)
+
+# Start the scheduler
+scheduler.start()
+print("🚀 Background scheduler started")
+print("📅 Scheduled updates: 5:00 AM and 5:00 PM UTC")
+
+# Shutdown scheduler when app exits
+atexit.register(lambda: scheduler.shutdown())
+
+# Load initial data on startup (in a try-except to prevent startup failure)
+print("\n🔄 Loading initial data on startup...")
+try:
+    initial_data = load_fpl_data()
+    if not initial_data.empty:
+        print("✅ Initial data loaded successfully")
+    else:
+        print("⚠️ Initial data load returned empty dataframe")
+except Exception as e:
+    print(f"⚠️ Could not load initial data: {e}")
+    print("App will retry on first user request")
+
+# ==================
+# FLASK ROUTES
+# ==================
 
 @app.route('/')
 def home():
@@ -346,5 +427,37 @@ def search():
     
     return render_template('search.html', query=query, results=player_results, current_gw=current_gw)
 
+# ==================
+# DEBUG/ADMIN ROUTES (Optional)
+# ==================
+
+@app.route('/refresh-now')
+def manual_refresh():
+    """Manual refresh endpoint for testing"""
+    print("\n🔄 Manual refresh requested by user")
+    scheduled_data_refresh()
+    return "Data refresh triggered! Check console for details.", 200
+
+@app.route('/cache-status')
+def cache_status():
+    """Show cache status for debugging"""
+    if cache.is_empty():
+        return {
+            "status": "empty",
+            "message": "Cache is empty"
+        }
+    
+    next_update = cache.get_next_update_time()
+    now = datetime.now(timezone.utc)
+    time_until = next_update - now
+    
+    return {
+        "status": "active",
+        "current_gw": cache.current_gw,
+        "last_updated": cache.last_updated.strftime('%Y-%m-%d %H:%M:%S UTC') if cache.last_updated else None,
+        "next_update": next_update.strftime('%Y-%m-%d %H:%M:%S UTC'),
+        "time_until_next_update": f"{int(time_until.total_seconds() // 3600)}h {int((time_until.total_seconds() % 3600) // 60)}m"
+    }
+
 if __name__ == '__main__':
-    app.run(debug=True) 
+    app.run(debug=True)
