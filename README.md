@@ -20,9 +20,9 @@ A data-driven Fantasy Premier League transfer planning tool that helps you make 
 
 ## Documentation
 
-- [Product Roadmap](ROADMAP.md) - Development phases and vision
-- [Feature Backlog](BACKLOG.md) - Prioritized feature list
-- [Technical Notes](TECHNICAL.md) - Architecture and decisions
+- [Product Roadmap](roadmap.md) - Development phases and vision
+- [Feature Backlog](backlog.md) - Prioritized feature list
+- [Technical Notes](technical.md) - Architecture and decisions
 
 ## Quick Start
 
