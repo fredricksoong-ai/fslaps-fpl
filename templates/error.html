@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Error - FPL Analyzer{% endblock %}
+
+{% block page_title %}⚠️ Error{% endblock %}
+
+{% block extra_style %}
+    .error-box {
+        background-color: #ffebee;
+        border: 2px solid #ef5350;
+        border-radius: 8px;
+        padding: 30px;
+        text-align: center;
+        margin: 50px auto;
+        max-width: 600px;
+    }
+    .error-box h2 {
+        color: #c62828;
+        margin-top: 0;
+    }
+    .error-box p {
+        font-size: 18px;
+        color: #666;
+    }
+{% endblock %}
+
+{% block content %}
+    <div class="error-box">
+        <h2>Something went wrong</h2>
+        <p>{{ message }}</p>
+    </div>
+{% endblock %}

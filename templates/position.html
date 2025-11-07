@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}FPL Analyzer - {{ position }}s{% endblock %}
+
+{% block page_title %}{{ position }} Analysis{% endblock %}
+
+{% block content %}
+    <div class="position-section">
+        <table>
+            <thead>
+                <tr>
+                    <th>Player</th>
+                    <th>Team</th>
+                    <th>Cost</th>
+                    <th>Ownership %</th>
+                    <th>Total Points</th>
+                    <th>xGI</th>
+                    <th>Pts/Game</th>
+                    <th>Pts/£m</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for player in players %}
+                <tr>
+                    <td>{{ player.web_name }}</td>
+                    <td>{{ player.team_name }}</td>
+                    <td>£{{ player.now_cost|round(1) }}</td>
+                    <td>{{ player.selected_by_percent }}%</td>
+                    <td>{{ player.total_points }}</td>
+                    <td>{{ player.expected_goal_involvements }}</td>
+                    <td>{{ player.points_per_game }}</td>
+                    <td>{{ player.points_per_million }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+{% endblock %}

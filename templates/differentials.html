@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+
+{% block title %}FPL Analyzer - Differentials{% endblock %}
+
+{% block extra_style %}
+<style>
+/* --- STYLES INHERITED FROM analysis-overview.html FOR CONSISTENCY --- */
+
+/* 1. SECTION HEADER SPACING IMPROVEMENT */
+.position-section .section-header-content {
+    /* Use a dedicated class for the header content div to control padding */
+    padding: 20px 20px 10px 20px; /* Top, Right, Bottom (tighter), Left */
+}
+
+.position-section .section-header-content h2 {
+    /* Ensure the H2 itself has a good margin below to push content down */
+    margin-bottom: 1rem; 
+    padding-bottom: 0.5rem; /* Add padding to the bottom of the border-b */
+    border-bottom: 1px solid var(--border-color); /* Use base variable */
+}
+
+/* 2. TABLE WRAPPER STYLES for stickiness and overflow */
+.position-section-inner {
+    overflow-x: auto;
+    padding: 0 20px 20px 20px; /* Ensure content padding is set here, not in the overall section */
+}
+
+/* 3. TABLE HEADER STYLES (Match Primary/Dark Gradient) */
+.position-section table thead {
+    background: none !important; 
+    box-shadow: none !important;
+}
+
+.position-section table th {
+    /* Use the same gradient as the other analysis page */
+    background: linear-gradient(90deg, var(--primary-color), var(--primary-dark)) !important;
+    color: var(--text-light) !important;
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+
+/* 4. Custom Ownership Highlight for Differentials */
+.differential-ownership {
+    color: #ef4444; /* Tailwind Red 500 for low ownership warning */
+    font-weight: 700;
+}
+
+</style>
+{% endblock %}
+
+
+{% block content %}
+    
+    <div class="p-4 text-center">
+        <p class="text-xl font-semibold text-gray-600">Low Ownership, High Potential Players</p>
+    </div>
+
+    <div class="space-y-8">
+    {% for position, players in differentials_data.items() %}
+    <div class="position-section">
+        
+        <div class="section-header-content">
+            <h2 class="text-2xl font-bold text-gray-800 border-b">{{ position }}s</h2>
+        </div>
+
+        <div class="position-section-inner">
+            <table class="min-w-full divide-y divide-gray-200">
+            <thead class="sticky top-0 z-10">
+                <tr>
+                    <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Player</th>
+                    <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Team</th>
+                    <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Cost</th>
+                    <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Ownership %</th>
+                    <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Points</th>
+
+                    {% if position == 'Goalkeeper' %}
+                    <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Saves/£m</th>
+                    {% else %}
+                    <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">xGI</th>
+                    {% endif %}
+                    
+                    <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Pts/£m</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+                {% for player in players %}
+                <tr class="{% if loop.index is odd %}bg-gray-50{% else %}bg-white{% endif %} hover:bg-gray-100">
+                    <td class="px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900">{{ player.web_name }}</td>
+                    <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500">{{ player.team_name }}</td>
+                    <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500 font-semibold text-right">£{{ player.now_cost|round(1) }}</td>
+                    
+                    <!-- Highlight Ownership in Red to emphasize Differential status -->
+                    <td class="px-4 py-2 whitespace-nowrap text-sm differential-ownership text-right">{{ player.selected_by_percent }}%</td>
+                    
+                    <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500 text-right">{{ player.total_points }}</td>
+                    
+                    <!-- Conditional Heatmap for Value Metric (Saves/£m or xGI) - FPL PURPLE -->
+                    {% set value_metric = player.value_metric %}
+                    {% set max_value = 30 if position == 'Goalkeeper' else 2.0 %}
+                    
+                    {% set value_ratio = value_metric / max_value %}
+                    {% set alpha = (value_ratio * 0.8 + 0.15) | round(2) %}
+
+                    <td class="px-4 py-2 whitespace-nowrap text-sm font-bold text-gray-700 text-right"
+                        style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                        {{ value_metric }}
+                    </td>
+
+                    <!-- Heatmap for Pts/£m - FPL PURPLE -->
+                    {% set max_ppm = 25 %}
+                    {% set ppm_ratio = player.points_per_million / max_ppm %}
+                    {% set alpha_ppm = (ppm_ratio * 0.8 + 0.15) | round(2) %}
+
+                    <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 font-medium text-right"
+                        style="background-color: rgba(139, 92, 246, {{ alpha_ppm }});">
+                        {{ player.points_per_million }}
+                    </td>
+
+                    <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 font-medium text-right"
+                        style="background-color: rgba(139, 92, 246, {{ alpha_ppm }});">
+                        {{ player.points_per_million }}
+                    </td>
+
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+    {% endfor %}
+    </div>
+
+{% endblock %}

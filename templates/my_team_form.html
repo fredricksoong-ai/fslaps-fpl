@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}Import Your Team - FPL Transfer Tool{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>Import Your FPL Team</h1>
+    
+    <div class="import-form">
+        <form action="/my-team" method="get">
+            <div class="form-group">
+                <label for="team_id">Enter your FPL Team ID:</label>
+                <input type="number" id="team_id" name="team_id" required 
+                       placeholder="e.g., 123456" min="1">
+                <button type="submit" class="btn btn-primary">Load Team</button>
+            </div>
+        </form>
+        
+        <div class="help-text">
+            <h3>How to find your Team ID:</h3>
+            <ol>
+                <li>Log in to the official FPL website</li>
+                <li>Go to "My Team" or "Points"</li>
+                <li>Look at the URL - it will contain your team ID</li>
+                <li>Example: fantasy.premierleague.com/entry/<strong>123456</strong>/event/12</li>
+            </ol>
+        </div>
+    </div>
+</div>
+
+<style>
+    .import-form {
+        max-width: 500px;
+        margin: 2rem auto;
+        padding: 2rem;
+        background: #f8f9fa;
+        border-radius: 8px;
+    }
+    
+    .form-group {
+        margin-bottom: 1rem;
+    }
+    
+    label {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-weight: bold;
+    }
+    
+    input[type="number"] {
+        width: 200px;
+        padding: 0.5rem;
+        font-size: 1rem;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        margin-right: 1rem;
+    }
+    
+    .btn {
+        padding: 0.5rem 1.5rem;
+        font-size: 1rem;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    
+    .btn-primary {
+        background: #37003c;
+        color: white;
+    }
+    
+    .btn-primary:hover {
+        background: #4a0050;
+    }
+    
+    .help-text {
+        margin-top: 2rem;
+        padding: 1rem;
+        background: white;
+        border-radius: 4px;
+    }
+    
+    .help-text h3 {
+        margin-top: 0;
+        color: #37003c;
+    }
+    
+    .help-text ol {
+        margin-left: 1.5rem;
+    }
+</style>
+{% endblock %}

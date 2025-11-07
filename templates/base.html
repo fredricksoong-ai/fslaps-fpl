@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}FPL Web Analyzer{% endblock %}</title>
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    
+    <style>
+        /* CSS Reset and Root Variables (Simplified) */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            /* Primary Colors (Retaining FPL identity but simplifying) */
+            --primary-color: #37003c; /* FPL Purple */
+            --primary-dark: #2a002e;  
+            --accent-color: #00ff87;  
+            --success-color: #008744; 
+            --danger-color: #dc3545;
+            
+            /* Backgrounds (Simple and clean) */
+            --bg-primary: #ffffff;
+            --bg-secondary: #f8f8f8; 
+            --bg-tertiary: #f0f0f0;
+            --bg-body: var(--bg-secondary); 
+            
+            /* Text */
+            --text-primary: #1f2937; 
+            --text-secondary: #6b7280;
+            --text-light: #ffffff;
+            
+            /* Borders and Shadows (Subtle) */
+            --border-color: #e5e7eb;
+            --border-radius-sm: 4px;
+            --border-radius-md: 8px;
+            --border-radius-lg: 12px;
+            
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.08); 
+            --shadow-md: 0 4px 6px rgba(0,0,0,0.08);
+            
+            --transition-base: all 0.2s ease;
+            --font-family: 'Inter', sans-serif;
+        }
+
+        /* Base Styles */
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: var(--font-family);
+            color: var(--text-primary);
+            background: var(--bg-body); 
+            min-height: 100vh;
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* Main App Container */
+        .app-wrapper {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header Styles (Clean and flat) */
+        .app-header {
+            background: var(--bg-primary);
+            box-shadow: var(--shadow-sm); 
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 10px 20px; 
+            display: flex;
+            align-items: center; 
+            justify-content: space-between; 
+        }
+        
+        /* New container for left-side elements: Title, Status, and Data Source */
+        .header-left {
+            /* 🚀 ULTRA-COMPACT FIX: Ensure all elements inside are aligned horizontally */
+            display: flex;
+            flex-direction: row; 
+            align-items: center; /* Vertically align all items (title, badges, text) */
+            gap: 15px; /* Space between the title and the status pills */
+            padding-right: 20px; 
+        }
+
+
+        .app-title {
+            text-align: left;
+            margin-bottom: 0; 
+        }
+
+        .app-title h1 {
+            font-size: 28px; 
+            font-weight: 800;
+            color: var(--primary-color);
+            letter-spacing: -0.5px;
+            /* Ensure h1 does not add unexpected vertical spacing */
+            line-height: 1; 
+        }
+
+        .app-title .emoji {
+            display: none; 
+        }
+
+        /* Gameweek Status - Now part of the horizontal flow */
+        .gameweek-status {
+            text-align: left;
+            margin-bottom: 0; 
+            font-size: 12px; 
+            color: var(--text-secondary);
+            padding-top: 0; /* Remove top padding */
+            
+            /* 🚀 ULTRA-COMPACT FIX: Align badges and small text horizontally */
+            display: flex; 
+            align-items: center;
+            gap: 8px; /* Space between badges/text */
+        }
+
+        .gameweek-badge {
+            display: inline-block;
+            background: var(--bg-tertiary);
+            padding: 3px 8px; /* Slightly tighter padding */
+            border-radius: 12px; /* Rounder but smaller */
+            margin: 0; /* Remove horizontal margin */
+            font-weight: 500;
+            font-size: 11px; /* Smaller font size */
+            color: var(--text-primary);
+        }
+
+        .gameweek-badge.in-progress {
+            background: #ffc107; 
+            color: var(--text-primary);
+        }
+
+        .gameweek-badge.completed {
+            background: var(--success-color); 
+            color: white;
+        }
+
+        .data-source-link {
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 500;
+            transition: var(--transition-base);
+        }
+
+        .data-source-link:hover {
+            color: var(--primary-color);
+            text-decoration: underline;
+        }
+        
+        /* Small text within gameweek status */
+        .gameweek-status small {
+            line-height: 1; /* Ensure minimal vertical height */
+        }
+
+        /* Navigation (Minimalist Pills) */
+        .main-nav {
+            display: flex;
+            justify-content: flex-end; 
+            gap: 8px; 
+            flex-wrap: wrap;
+            border-top: none; 
+            padding-top: 0;
+        }
+
+        .nav-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            background: transparent;
+            color: var(--text-secondary); 
+            text-decoration: none;
+            border-radius: 9999px; 
+            font-weight: 500;
+            font-size: 14px;
+            transition: var(--transition-base);
+        }
+
+        .nav-link:hover {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            transform: none; 
+            box-shadow: none;
+        }
+
+        .nav-link.active {
+            background: var(--primary-color);
+            color: var(--text-light);
+            box-shadow: 0 2px 5px rgba(55, 0, 60, 0.2);
+        }
+
+        .nav-link.active i {
+            color: var(--text-light); 
+        }
+        
+        /* Main Content Area */
+        .main-content {
+            flex: 1;
+            padding: 24px 0;
+        }
+
+        .content {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        /* Default Content Styles (Content Stability) */
+        .default-content {
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-lg);
+            padding: 32px;
+            box-shadow: var(--shadow-sm);
+            border: none; 
+        }
+
+        /* Tables and Position Sections (Content Stability) */
+        .position-section {
+            background: var(--bg-primary);
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: var(--border-radius-lg);
+            box-shadow: var(--shadow-sm); 
+            border: 1px solid var(--border-color);
+            transition: var(--transition-base);
+        }
+        
+        .position-section:hover {
+            box-shadow: var(--shadow-md); 
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate; 
+            border-spacing: 0;
+            background: var(--bg-primary);
+            border-radius: var(--border-radius-md);
+            overflow: hidden;
+            border: none;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-right: none; 
+        }
+
+        th {
+            background: linear-gradient(90deg, var(--primary-color), var(--primary-dark));
+            color: var(--text-light);
+            font-weight: 600;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        th:last-child, td:last-child {
+            border-right: none;
+        }
+
+        td {
+            border-bottom: 1px solid var(--border-color);
+            font-size: 14px;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover td {
+            background: var(--bg-secondary);
+        }
+
+        {% block extra_style %}{% endblock %}
+    </style>
+
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <div class="app-wrapper">
+        <header class="app-header">
+            <div class="header-container">
+                
+                <div class="header-left">
+                    
+                    <div class="app-title">
+                        <h1>FPLanner</h1>
+                    </div>
+
+                    {% if current_gw %}
+                    <div class="gameweek-status">
+                        <span class="gameweek-badge">Upcoming Gameweek: {{ current_gw }}</span>
+                        {% if gw_status %}
+                            {% if gw_status == 'in_progress' %}
+                                <span class="gameweek-badge in-progress">In Progress</span>
+                            {% elif gw_status == 'completed' %}
+                                <span class="gameweek-badge completed">Completed</span>
+                            {% endif %}
+                        {% endif %}
+                        {% if stats_gw and stats_gw != current_gw %}
+                            <span class="gameweek-badge">Stats from Gameweek{{ stats_gw }}</span>
+                        {% endif %}
+                        <small class="mt-1">Powered by 
+                            <a href="https://github.com/olbauday/FPL-Elo-Insights" target="_blank" class="data-source-link">
+                                FPL-Elo-Insights
+                            </a>
+                        </small>
+                    </div>
+                    {% endif %}
+                    
+                </div>
+                <nav class="main-nav">
+                    
+                    <a href="/" class="nav-link" id="nav-home">
+                        <i class="fas fa-home"></i>
+                        <span>Home</span>
+                    </a>
+                    <a href="/analysis-overview" class="nav-link" id="nav-analysis">
+                        <i class="fas fa-chart-line"></i>
+                        <span>Analysis</span>
+                    </a>
+                    <a href="/differentials" class="nav-link" id="nav-differentials">
+                        <i class="fas fa-gem"></i>
+                        <span>Differentials</span>
+                    </a>
+                    <a href="/search" class="nav-link" id="nav-search">
+                        <i class="fas fa-search"></i>
+                        <span>Search</span>
+                    </a>
+                    
+                </nav>
+                </div>
+        </header>
+
+        <main class="main-content">
+            <div class="content">
+                {% block content %}
+                <div class="default-content">
+                    <p>Welcome to FPLanner - Your Fantasy Premier League companion!</p>
+                </div>
+                {% endblock %}
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // JS Logic: Now correctly highlights 'Home' when on /, or /my-team/* document.addEventListener('DOMContentLoaded', function() {
+            const currentPath = window.location.pathname;
+            const navLinks = document.querySelectorAll('.nav-link');
+            
+            navLinks.forEach(link => {
+                const linkPath = link.getAttribute('href');
+                
+                // If current path matches the link exactly, or starts with the link path (e.g. /analysis-overview/subpage)
+                if (currentPath === linkPath || (linkPath !== '/' && currentPath.startsWith(linkPath))) {
+                    link.classList.add('active');
+                    return;
+                }
+                
+                // Special handling for Home, which is /. Highlight Home if we are on / or any /my-team/ path
+                if (linkPath === '/' && (currentPath === '/' || currentPath.startsWith('/my-team'))) {
+                    link.classList.add('active');
+                    return;
+                }
+            });
+        });
+
+        // Smooth scroll for anchor links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+    </script>
+
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html>

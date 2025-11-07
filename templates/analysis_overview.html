@@ -1,0 +1,404 @@
+{% extends "base.html" %}
+
+{% block title %}FPL Analyzer - Player Analysis{% endblock %}
+
+{% block extra_style %}
+<style>
+/* --- PAGE HEADER WITH SINGLE REFRESH BUTTON --- */
+.page-header {
+    max-width: 100%;
+    margin-bottom: 2rem;
+    padding: 0 20px;
+}
+
+.page-header-flex {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 1rem;
+    border-bottom: 2px solid var(--border-color);
+}
+
+.page-title {
+    font-size: 2rem;
+    font-weight: bold;
+    color: var(--primary-color);
+    margin: 0;
+}
+
+/* --- ALIGNED REFRESH BUTTON STYLE (matching my-team.html design) --- */
+.btn-refresh-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 15px;
+    background: var(--accent-color);
+    color: var(--primary-color);
+    border: 1px solid var(--accent-color);
+    border-radius: var(--border-radius-md);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 14px;
+    transition: var(--transition-base);
+    box-shadow: var(--shadow-sm);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.btn-refresh-all:hover {
+    background: #00e07a;
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+}
+
+/* --- SECTION HEADER SPACING IMPROVEMENT --- */
+.position-section .section-header-content {
+    padding: 20px 20px 10px 20px;
+}
+
+.position-section .section-header-content h2 {
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #1f2937;
+}
+
+/* --- CUSTOM STYLES FOR INSIGHTS SECTION --- */
+.insights-section-aligned {
+    background: #ff6f6f;
+    border: 1px solid var(--accent-color);
+    padding: 1rem 1.25rem;
+    border-radius: var(--border-radius-md);
+    margin: 15px 20px 20px 20px;
+}
+
+.insights-section-aligned .headline-banner {
+    background: none;
+    padding: 0;
+    color: var(--primary-color);
+    font-size: 0.95rem;
+}
+
+.insights-section-aligned p.headlines-text {
+    margin: 0 0 5px 0 !important;
+    font-weight: 700;
+    color: var(--primary-dark);
+}
+
+.insights-section-aligned ul {
+    margin-top: 5px !important;
+    margin-bottom: 0 !important;
+    padding-left: 0 !important;
+    list-style-position: outside;
+}
+
+.insights-section-aligned li {
+    font-weight: 500;
+    line-height: 1.6;
+    margin-left: 1.5rem;
+    list-style-type: disc;
+    color: var(--text-primary);
+}
+
+.insights-section-aligned li em {
+    font-style: normal;
+}
+
+/* --- TABLE SPACING REFINEMENT --- */
+.position-section table th, .position-section table td {
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+
+.position-section-inner {
+    overflow-x: auto;
+    padding: 0 20px 20px 20px;
+}
+
+.position-section table {
+    border-radius: 0;
+}
+
+.position-section table thead {
+    background: none !important;
+    box-shadow: none !important;
+}
+
+.position-section table th {
+    background: linear-gradient(90deg, var(--primary-color), var(--primary-dark)) !important;
+    color: var(--text-light) !important;
+}
+</style>
+{% endblock %}
+
+
+{% block content %}
+
+<div class="page-header">
+    <div class="page-header-flex">
+        <h1 class="page-title">Player Analysis</h1>
+        <button onclick="refreshAllInsights()" class="btn-refresh-all">
+            <i class="fas fa-magic"></i> Refresh All Insights
+        </button>
+    </div>
+</div>
+
+<div class="position-section">
+    
+    <div class="section-header-content">
+        <h2>Overall Top 10 Players (Total Points)</h2>
+    </div>
+
+    {% if headlines and headlines.Overall %}
+    <div class="insights-section-aligned">
+        <div class="headline-banner">
+            <p class="headlines-text">
+                <strong>AI Insights:</strong> 
+            </p>
+            <ul>
+                {% for insight in headlines.Overall %}
+                <li>
+                    {{ insight }}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="position-section-inner">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="sticky top-0 z-10"> 
+            <tr>
+                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Player</th>
+                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Team</th>
+                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Position</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Cost</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Points</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Ownership %</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Form</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Clean Sheets</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Value Metric</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Pts/£m</th>
+            </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+            {% for player in overall_top_10 %}
+            <tr class="{% if loop.index is odd %}bg-gray-50{% else %}bg-white{% endif %} hover:bg-gray-100"> 
+                <td class="px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900">{{ player['web_name'] }}</td>
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500">{{ player['team_name'] }}</td>
+                <td class="px-4 py-2 whitespace-nowrap text-sm font-semibold text-gray-500">{{ player['position'] }}</td>
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500 font-semibold text-right">£{{ player['now_cost'] }}</td>
+
+                {% set max_points = global_max_values.max_points | default(250) %}
+                {% set points_ratio = player['total_points'] | default(0) / max_points %}
+                {% set alpha = (points_ratio * 0.8 + 0.15) | round(2) %}
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 font-bold text-right"
+                    style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ player['total_points'] | default(0) }}
+                </td>
+
+                {% set max_ownership = global_max_values.max_ownership | default(40) %}
+                {% set ownership_ratio = player['selected_by_percent'] | default(0) / max_ownership %}
+                {% set alpha = (ownership_ratio * 0.8 + 0.15) | round(2) %}
+                <td class="px-4 py-2 whitespace-nowrap text-sm font-medium text-right"
+                    style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ player['selected_by_percent'] | default(0) }}%
+                </td>
+
+                {% set max_form = global_max_values.max_form | default(15) %}
+                {% set form_ratio = player['form'] | default(0) / max_form %}
+                {% set alpha = (form_ratio * 0.8 + 0.15) | round(2) %}
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 font-bold text-right"
+                    style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ player['form'] | default(0) }}
+                </td>
+
+                {% set max_cs = global_max_values.max_cs | default(10) %}
+                {% set cs_ratio = player['clean_sheets'] | default(0) / max_cs %}
+                {% set alpha = (cs_ratio * 0.8 + 0.15) | round(2) %}
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 text-right"
+                    style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ player['clean_sheets'] | default(0) }}
+                </td>
+
+                {% if player['position'] == 'GK' %}
+                    {% set value_metric = player['save_value_per_million'] | default(0) %}
+                    {% set max_value = global_max_values.max_saves_pm | default(30) %}
+                {% else %}
+                    {% set value_metric = player['expected_goal_involvements'] | default(0) %}
+                    {% set max_value = global_max_values.max_xgi | default(20) %}
+                {% endif %}
+                {% set value_ratio = value_metric / max_value %}
+                {% set alpha = (value_ratio * 0.8 + 0.15) | round(2) %}
+                <td class="px-4 py-2 whitespace-nowrap text-sm font-bold text-right"
+                    style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ value_metric }}
+                </td>
+
+                {% set max_ppm = global_max_values.max_ppm | default(30) %}
+                {% set ppm_ratio = player['points_per_million'] | default(0) / max_ppm %}
+                {% set alpha = (ppm_ratio * 0.8 + 0.15) | round(2) %}
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 font-medium text-right"
+                    style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ player['points_per_million'] | default(0) }}
+                </td>
+
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+</div>
+
+<div class="space-y-8">
+{% for position, players in analysis_data.items() %}
+{% set pos_maxes = positional_max_values[position] %}
+
+<div class="position-section">
+    
+    <div class="section-header-content">
+        <h2>{{ position }}s</h2>
+    </div>
+
+    {% if headlines and headlines[position] %}
+    <div class="insights-section-aligned">
+        <div class="headline-banner">
+            <p class="headlines-text">
+                <strong>AI Insights:</strong> 
+            </p>
+            <ul>
+                {% for insight in headlines[position] %}
+                <li>
+                    {{ insight }}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="position-section-inner">
+        <table class="min-w-full divide-y divide-gray-200">
+            <thead class="sticky top-0 z-10">
+            <tr>
+                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Player</th>
+                <th class="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider">Team</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Cost</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Points</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Ownership %</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Form</th>
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Clean Sheets</th>
+
+                {% if position == 'Goalkeeper' %}
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Saves/£m</th>
+                {% else %}
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">xGI</th>
+                {% endif %}
+                <th class="px-4 py-3 text-right text-xs font-medium uppercase tracking-wider">Pts/£m</th>
+            </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-200">
+            {% for player in players %}
+            <tr class="{% if loop.index is odd %}bg-gray-50{% else %}bg-white{% endif %} hover:bg-gray-100">
+                <td class="px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900">{{ player['web_name'] }}</td>
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500">{{ player['team_name'] }}</td>
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-500 font-semibold text-right">£{{ player['now_cost'] }}</td>
+
+                {% set max_points = pos_maxes.max_points | default(1) %}
+                {% set points_ratio = player['total_points'] | default(0) / max_points %}
+                {% set alpha = (points_ratio * 0.8 + 0.15) | round(2) %}
+
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 font-bold text-right"
+                style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ player['total_points'] | default(0) }}
+                </td>
+
+                {% set max_ownership = pos_maxes.max_ownership | default(1) %}
+                {% set ownership_ratio = player['selected_by_percent'] | default(0) / max_ownership %}
+                {% set alpha = (ownership_ratio * 0.8 + 0.15) | round(2) %}
+
+                <td class="px-4 py-2 whitespace-nowrap text-sm font-medium text-right"
+                style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ player['selected_by_percent'] | default(0) }}%
+                </td>
+
+                {% set max_form = pos_maxes.max_form | default(1) %}
+                {% set form_ratio = player['form'] | default(0) / max_form %}
+                {% set alpha = (form_ratio * 0.8 + 0.15) | round(2) %}
+
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 font-bold text-right"
+                style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ player['form'] | default(0) }}
+                </td>
+
+                {% set max_cs = pos_maxes.max_cs | default(1) %}
+                {% set cs_ratio = player['clean_sheets'] | default(0) / max_cs %}
+                {% set alpha = (cs_ratio * 0.8 + 0.15) | round(2) %}
+
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 text-right"
+                style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ player['clean_sheets'] | default(0) }}
+                </td>
+
+                {% if position == 'Goalkeeper' %}
+                {% set value_metric = player['save_value_per_million'] | default(0) %}
+                {% else %}
+                {% set value_metric = player['expected_goal_involvements'] | default(0) %}
+                {% endif %}
+                {% set max_value = pos_maxes.max_value_metric | default(1) %}
+                {% set value_ratio = value_metric / max_value %}
+                {% set alpha = (value_ratio * 0.8 + 0.15) | round(2) %}
+
+                <td class="px-4 py-2 whitespace-nowrap text-sm font-bold text-right"
+                style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ value_metric }}
+                </td>
+
+                {% set max_ppm = pos_maxes.max_ppm | default(1) %}
+                {% set ppm_ratio = player['points_per_million'] | default(0) / max_ppm %}
+                {% set alpha = (ppm_ratio * 0.8 + 0.15) | round(2) %}
+
+                <td class="px-4 py-2 whitespace-nowrap text-sm text-gray-700 font-medium text-right"
+                style="background-color: rgba(139, 92, 246, {{ alpha }});">
+                    {{ player['points_per_million'] | default(0) }}
+                </td>
+
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+</div>
+{% endfor %}
+</div>
+
+<script>
+function refreshAllInsights() {
+    // This function will refresh insights for all positions
+    const positions = ['Overall', 'Goalkeeper', 'Defender', 'Midfielder', 'Forward'];
+    
+    // You can implement the actual refresh logic here
+    // For now, this is a placeholder that would call your backend
+    console.log('Refreshing all insights...');
+    
+    // Example: You might want to show a loading state
+    const button = event.target;
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Refreshing...';
+    
+    // Call your refresh endpoint here
+    // After completion, restore the button
+    setTimeout(() => {
+        button.disabled = false;
+        button.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh Al Insights';
+        window.location.reload(); // Or update the page content dynamically
+    }, 2000);
+}
+</script>
+
+{% endblock %}

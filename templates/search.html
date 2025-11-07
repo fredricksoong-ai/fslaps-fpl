@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}FPL Analyzer - Search{% endblock %}
+
+{% block page_title %}🔍 Search Players{% endblock %}
+
+{% block extra_style %}
+    .search-box {
+        text-align: center;
+        margin: 30px 0;
+        background: white;
+        padding: 30px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .search-box input {
+        padding: 12px;
+        width: 60%;
+        font-size: 16px;
+        border: 2px solid #37003c;
+        border-radius: 4px;
+    }
+    .search-box button {
+        padding: 12px 30px;
+        font-size: 16px;
+        background-color: #37003c;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-left: 10px;
+    }
+    .search-box button:hover {
+        background-color: #00ff87;
+        color: #37003c;
+    }
+    .results-section {
+        background: white;
+        padding: 20px;
+        margin: 20px 0;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .no-results {
+        text-align: center;
+        color: #666;
+        padding: 40px;
+    }
+{% endblock %}
+
+{% block content %}
+    <div class="search-box">
+        <form action="/search" method="get">
+            <input type="text" name="q" placeholder="Enter player name..." value="{{ query }}" autofocus>
+            <button type="submit">Search</button>
+        </form>
+    </div>
+
+    {% if query %}
+        <div class="results-section">
+            <h2>Results for "{{ query }}"</h2>
+            
+            {% if results %}
+                <p>Found {{ results|length }} player(s)</p>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Player</th>
+                            <th>Position</th>
+                            <th>Team</th>
+                            <th>Cost</th>
+                            <th>Ownership %</th>
+                            <th>Total Points</th>
+                            <th>xGI</th>
+                            <th>Pts/Game</th>
+                            <th>Pts/£m</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for player in results %}
+                        <tr>
+                            <td><strong>{{ player.web_name }}</strong></td>
+                            <td>{{ player.position }}</td>
+                            <td>{{ player.team_name }}</td>
+                            <td>£{{ player.now_cost|round(1) }}</td>
+                            <td>{{ player.selected_by_percent }}%</td>
+                            <td>{{ player.total_points }}</td>
+                            <td>{{ player.expected_goal_involvements }}</td>
+                            <td>{{ player.points_per_game }}</td>
+                            <td>{{ player.points_per_million }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <div class="no-results">
+                    <p>No players found matching "{{ query }}"</p>
+                    <p>Try searching with a different name</p>
+                </div>
+            {% endif %}
+        </div>
+    {% endif %}
+{% endblock %}
