@@ -1,0 +1,278 @@
+"""
+risk_analyzer.py
+
+Analyzes player data to detect various risk factors.
+Provides methods for identifying rotation risk, dead wood, form concerns, etc.
+"""
+
+from player_dataframe import PlayerDataFrame
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class RiskAnalyzer:
+    """
+    Analyzes player data to detect various risk factors.
+    """
+    
+    @staticmethod
+    def detect_rotation_risk(player_df):
+        """
+        Flag players with low minutes percentage.
+        
+        Criteria:
+        - Warning: < 70% minutes
+        - Urgent: < 50% minutes
+        
+        Args:
+            player_df: PlayerDataFrame
+        
+        Returns:
+            PlayerDataFrame with rotation risk flags
+        """
+        logger.debug("Detecting rotation risk...")
+        
+        if 'minutes_pct' not in player_df.df.columns:
+            logger.warning("minutes_pct column not found, skipping rotation risk detection")
+            return player_df
+        
+        # Flag rotation risk
+        player_df.df['rotation_risk'] = (
+            (player_df.df['minutes_pct'] < 70) & 
+            (player_df.df['minutes_pct'] > 0)  # Exclude players with 0 minutes
+        )
+        
+        # Severity levels
+        player_df.df['rotation_severity'] = 'ok'
+        player_df.df.loc[player_df.df['minutes_pct'] < 70, 'rotation_severity'] = 'warning'
+        player_df.df.loc[player_df.df['minutes_pct'] < 50, 'rotation_severity'] = 'urgent'
+        
+        count = player_df.df['rotation_risk'].sum()
+        logger.debug(f"Found {count} players with rotation risk")
+        
+        return player_df
+    
+    @staticmethod
+    def detect_dead_wood(player_df):
+        """
+        Flag players with poor returns AND low minutes.
+        
+        Criteria:
+        - Points per game < 2
+        - Minutes % < 60%
+        
+        Args:
+            player_df: PlayerDataFrame
+        
+        Returns:
+            PlayerDataFrame with dead wood flags
+        """
+        logger.debug("Detecting dead wood...")
+        
+        required_cols = ['points_per_game', 'minutes_pct']
+        if not all(col in player_df.df.columns for col in required_cols):
+            logger.warning("Required columns not found, skipping dead wood detection")
+            return player_df
+        
+        player_df.df['dead_wood'] = (
+            (player_df.df['points_per_game'] < 2) &
+            (player_df.df['minutes_pct'] < 60) &
+            (player_df.df['minutes_pct'] > 0)
+        )
+        
+        count = player_df.df['dead_wood'].sum()
+        logger.debug(f"Found {count} dead wood players")
+        
+        return player_df
+    
+    @staticmethod
+    def detect_form_concerns(player_df):
+        """
+        Flag players with declining form vs expectations.
+        
+        Criteria:
+        - Form < 3
+        - xGI > 0.5 (showing they should be performing)
+        - Total points > 20 (not a new player)
+        
+        Args:
+            player_df: PlayerDataFrame
+        
+        Returns:
+            PlayerDataFrame with form concern flags
+        """
+        logger.debug("Detecting form concerns...")
+        
+        required_cols = ['form', 'expected_goal_involvements', 'total_points']
+        if not all(col in player_df.df.columns for col in required_cols):
+            logger.warning("Required columns not found, skipping form concern detection")
+            return player_df
+        
+        player_df.df['form_concern'] = (
+            (player_df.df['form'].astype(float) < 3) &
+            (player_df.df['expected_goal_involvements'] > 0.5) &
+            (player_df.df['total_points'] > 20)
+        )
+        
+        count = player_df.df['form_concern'].sum()
+        logger.debug(f"Found {count} players with form concerns")
+        
+        return player_df
+    
+    @staticmethod
+    def detect_injury_risk(player_df):
+        """
+        Flag players with injury concerns.
+        
+        Criteria:
+        - Urgent: < 75% chance of playing
+        - Warning: < 100% chance of playing
+        
+        Args:
+            player_df: PlayerDataFrame
+        
+        Returns:
+            PlayerDataFrame with injury risk flags
+        """
+        logger.debug("Detecting injury risk...")
+        
+        if 'chance_of_playing_next_round' not in player_df.df.columns:
+            logger.warning("chance_of_playing_next_round column not found, skipping injury risk detection")
+            return player_df
+        
+        player_df.df['injury_risk'] = player_df.df['chance_of_playing_next_round'] < 100
+        
+        # Severity levels
+        player_df.df['injury_severity'] = 'ok'
+        player_df.df.loc[player_df.df['chance_of_playing_next_round'] < 100, 'injury_severity'] = 'warning'
+        player_df.df.loc[player_df.df['chance_of_playing_next_round'] < 75, 'injury_severity'] = 'urgent'
+        
+        count = player_df.df['injury_risk'].sum()
+        logger.debug(f"Found {count} players with injury concerns")
+        
+        return player_df
+    
+    @staticmethod
+    def detect_value_concerns(player_df):
+        """
+        Flag expensive players with poor value metrics.
+        
+        Criteria:
+        - Price > £8.0m
+        - Points per million below median
+        
+        Args:
+            player_df: PlayerDataFrame
+        
+        Returns:
+            PlayerDataFrame with value concern flags
+        """
+        logger.debug("Detecting value concerns...")
+        
+        required_cols = ['now_cost', 'points_per_million']
+        if not all(col in player_df.df.columns for col in required_cols):
+            logger.warning("Required columns not found, skipping value concern detection")
+            return player_df
+        
+        median_ppm = player_df.df['points_per_million'].median()
+        
+        player_df.df['value_concern'] = (
+            (player_df.df['now_cost'] > 8.0) &
+            (player_df.df['points_per_million'] < median_ppm)
+        )
+        
+        count = player_df.df['value_concern'].sum()
+        logger.debug(f"Found {count} players with value concerns")
+        
+        return player_df
+    
+    @staticmethod
+    def analyze_all_risks(player_df):
+        """
+        Run all risk detection methods and create summary.
+        
+        Args:
+            player_df: PlayerDataFrame
+        
+        Returns:
+            PlayerDataFrame with all risk flags
+        """
+        logger.info("Running comprehensive risk analysis...")
+        
+        # Run all detection methods
+        player_df = RiskAnalyzer.detect_rotation_risk(player_df)
+        player_df = RiskAnalyzer.detect_dead_wood(player_df)
+        player_df = RiskAnalyzer.detect_form_concerns(player_df)
+        player_df = RiskAnalyzer.detect_injury_risk(player_df)
+        player_df = RiskAnalyzer.detect_value_concerns(player_df)
+        
+        # Create aggregate risk score
+        risk_columns = ['rotation_risk', 'dead_wood', 'form_concern', 'injury_risk', 'value_concern']
+        
+        # Only sum columns that exist
+        existing_risk_cols = [col for col in risk_columns if col in player_df.df.columns]
+        
+        if existing_risk_cols:
+            player_df.df['total_risk_flags'] = player_df.df[existing_risk_cols].sum(axis=1)
+        else:
+            player_df.df['total_risk_flags'] = 0
+        
+        total_at_risk = (player_df.df['total_risk_flags'] > 0).sum()
+        logger.info(f"✓ Risk analysis complete: {total_at_risk} players flagged with concerns")
+        
+        return player_df
+    
+    @staticmethod
+    def get_risk_summary(player_df):
+        """
+        Get a summary of risks in the dataset.
+        
+        Args:
+            player_df: PlayerDataFrame with risk flags
+        
+        Returns:
+            Dictionary with risk counts
+        """
+        summary = {}
+        
+        risk_fields = {
+            'rotation_risk': 'Rotation Risk',
+            'dead_wood': 'Dead Wood',
+            'form_concern': 'Form Concerns',
+            'injury_risk': 'Injury Risk',
+            'value_concern': 'Value Concerns'
+        }
+        
+        for field, label in risk_fields.items():
+            if field in player_df.df.columns:
+                count = player_df.df[field].sum()
+                summary[label] = int(count)
+        
+        if 'total_risk_flags' in player_df.df.columns:
+            summary['Total Players with Risks'] = int((player_df.df['total_risk_flags'] > 0).sum())
+        
+        return summary
+    
+    @staticmethod
+    def get_problem_players(player_df, min_risk_flags=1):
+        """
+        Get players with risk flags for detailed analysis.
+        
+        Args:
+            player_df: PlayerDataFrame with risk flags
+            min_risk_flags: Minimum number of risk flags to include
+        
+        Returns:
+            PlayerDataFrame with only problem players
+        """
+        if 'total_risk_flags' not in player_df.df.columns:
+            logger.warning("Risk analysis not run yet, returning empty result")
+            return PlayerDataFrame(player_df.df.head(0))
+        
+        problem_df = player_df.df[player_df.df['total_risk_flags'] >= min_risk_flags].copy()
+        
+        # Sort by severity (most risk flags first)
+        problem_df = problem_df.sort_values('total_risk_flags', ascending=False)
+        
+        return PlayerDataFrame(problem_df)
