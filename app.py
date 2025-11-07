@@ -1,287 +1,183 @@
-# FPL Web Analyzer - Flask Application with Background Scheduler
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, redirect, url_for, make_response
 import pandas as pd
-import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
-import time
 import atexit
+import time
+import requests
+import json
+import random
+
+# NEW IMPORTS
+from cache_module import SmartDataCache
+from github_data import load_fpl_data, scheduled_data_refresh, GITHUB_BASE 
+from fpl_api import FPLApiClient
+from player_dataframe import PlayerDataFrame
+from data_enrichment import DataEnricher
+from risk_analyzer import RiskAnalyzer
+from data_models import POSITION_MAP, VIEW_CONFIGS
+
+# NOTE: 'github_data' is now 'github_data_refactored' but we keep the old import name
+# assuming the module file was renamed/aliased to maintain compatibility.
+from cache_module import SmartDataCache
+from github_data import load_fpl_data, scheduled_data_refresh, GITHUB_BASE 
+from fpl_api import FPLApiClient
 
 app = Flask(__name__)
 
-# GitHub repo base URL
-GITHUB_BASE = "https://raw.githubusercontent.com/olbauday/FPL-Elo-Insights/main/data/2025-2026"
+# Add this to your app.py near the top, after creating the app
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.jinja_env.auto_reload = True
+
+# --- LLM API Configuration ---
+API_KEY = "AIzaSyCWycMOAs3o75Kaql_M0EJG7tQ_Csg5Nhw"
+API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent"
 
 # ==================
-# SMART TIME-BASED CACHING
+# INITIALIZE GLOBAL OBJECTS
 # ==================
-class SmartDataCache:
-    def __init__(self):
-        self.data = None
-        self.last_updated = None
-        self.current_gw = None
-        self.update_hours = [5, 17]  # 5am and 5pm UTC
-    
-    def get_next_update_time(self):
-        """Calculate when the next data update will happen"""
-        now = datetime.now(timezone.utc)
-        
-        for hour in self.update_hours:
-            next_update = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-            if next_update > now:
-                return next_update
-        
-        # Next update is 5am tomorrow
-        tomorrow = now + timedelta(days=1)
-        next_update = tomorrow.replace(hour=self.update_hours[0], minute=0, second=0, microsecond=0)
-        return next_update
-    
-    def should_refresh(self):
-        """Check if we should fetch fresh data (only for manual requests)"""
-        if self.last_updated is None:
-            print("❓ Cache is empty - need to fetch data")
-            return True
-        
-        now = datetime.now(timezone.utc)
-        
-        # Check if any update time occurred since last fetch
-        for hour in self.update_hours:
-            update_time_today = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-            if self.last_updated < update_time_today <= now:
-                print(f"⏰ Update time passed ({hour}:00 UTC) - fetching fresh data")
-                return True
-        
-        # Check yesterday's update times
-        yesterday = now - timedelta(days=1)
-        for hour in self.update_hours:
-            update_time_yesterday = yesterday.replace(hour=hour, minute=0, second=0, microsecond=0)
-            if self.last_updated < update_time_yesterday <= now:
-                print(f"⏰ Update time passed ({hour}:00 UTC yesterday) - fetching fresh data")
-                return True
-        
-        # Cache is still fresh
-        next_update = self.get_next_update_time()
-        time_until_next = next_update - now
-        hours = int(time_until_next.total_seconds() // 3600)
-        minutes = int((time_until_next.total_seconds() % 3600) // 60)
-        print(f"✓ Using cached data - next update in {hours}h {minutes}m")
-        return False
-    
-    def update(self, data, gw):
-        """Update the cache with new data"""
-        self.data = data
-        self.current_gw = gw
-        self.last_updated = datetime.now(timezone.utc)
-        
-        next_update = self.get_next_update_time()
-        print(f"✓ Cache updated at {self.last_updated.strftime('%Y-%m-%d %H:%M:%S')} UTC")
-        print(f"  Next scheduled update: {next_update.strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    
-    def get(self):
-        """Get cached data if available"""
-        if self.data is not None:
-            return self.data, self.current_gw
-        return None, None
-    
-    def is_empty(self):
-        """Check if cache is empty"""
-        return self.data is None
-
-# Initialize smart cache
-cache = SmartDataCache()
+cache = SmartDataCache() 
+fpl_client = FPLApiClient()
+enricher = DataEnricher(fpl_client)  # NEW: Initialize enricher
 
 # ==================
-# IMPROVED GW DETECTION
+# UPDATED: GEMINI API HELPER (Now generates 3 headlines via structured JSON)
 # ==================
-def get_latest_gameweek():
-    """Detect the latest available gameweek efficiently"""
-    try:
-        # Estimate current GW based on season start
-        season_start = datetime(2025, 8, 16)  # Adjust to actual season start
-        weeks_since_start = (datetime.now() - season_start).days // 7
-        estimated_gw = max(1, min(weeks_since_start, 38))
-        
-        print(f"📍 Estimated current GW: {estimated_gw}")
-        
-        # Search strategy: Check estimated GW, then nearby weeks
-        search_order = [estimated_gw]
-        for offset in range(1, 10):
-            if estimated_gw + offset <= 38:
-                search_order.append(estimated_gw + offset)
-            if estimated_gw - offset >= 1:
-                search_order.append(estimated_gw - offset)
-        
-        # Check each GW in our smart order
-        for gw in search_order:
-            url = f"{GITHUB_BASE}/By%20Gameweek/GW{gw}/playerstats.csv"
+
+def generate_analysis_headlines(data_list, position_name):
+    """
+    Calls Gemini API to generate 3 compelling headlines based on the top 10 data.
+    The function requests a structured JSON response.
+    """
+    if not data_list:
+        return [f"No top 10 data available for {position_name}.", "Data still loading...", "Check back after refresh."]
+
+    # Convert the list of player dictionaries (data_list) to a JSON string
+    data_json = json.dumps(data_list)
+    
+    # Define the System Instruction for the LLM
+    system_prompt = (
+        "You are an elite Fantasy Premier League (FPL) analyst. "
+        "Analyze the provided JSON data containing the top 10 players by points for a specific category. "
+        "Generate a **list of three (3) distinct, compelling, and insightful headlines**. "
+        "Focus on points, form, value (Pts/£m), and ownership. "
+        "Each headline must be a maximum of 15 words. The response MUST be a JSON array of strings."
+    )
+
+    # Define the User Query
+    user_query = (
+        f"Generate three headlines for the top players in the '{position_name}' category. "
+        "Analyze this data and focus on key standouts or trends: "
+        f"DATA: {data_json}"
+    )
+
+    # Construct the payload, requesting JSON output structure
+    payload = {
+        "contents": [{"parts": [{"text": user_query}]}],
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"}
+            }
+        }
+    }
+
+    # Exponential Backoff Retry Logic
+    max_retries = 3
+    initial_delay = 1 # seconds
+
+    for attempt in range(max_retries):
+        try:
+            headers = {'Content-Type': 'application/json'}
+            response = requests.post(f"{API_URL}?key={API_KEY}", headers=headers, json=payload, timeout=15)
+            response.raise_for_status() 
             
-            try:
-                response = requests.head(url, timeout=3, allow_redirects=True)
-                
-                if response.status_code == 200:
-                    content_length = response.headers.get('Content-Length')
-                    
-                    if content_length and int(content_length) > 1000:
-                        print(f"✓ Found GW{gw} (Size: {content_length} bytes)")
-                        return gw
-                        
-            except requests.exceptions.RequestException:
-                continue
+            result = response.json()
+            
+            # Safely extract the generated JSON string from the response
+            json_text = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
+            
+            if json_text:
+                # Attempt to parse the JSON array
+                try:
+                    headlines_list = json.loads(json_text)
+                    # Ensure the result is actually a list of strings and has 3 items
+                    if isinstance(headlines_list, list) and len(headlines_list) == 3 and all(isinstance(h, str) for h in headlines_list):
+                        return headlines_list
+                except json.JSONDecodeError:
+                    print(f"LLM API returned unparsable JSON: {json_text}")
+
+            # If parsing failed or result was empty, retry or break
+            print(f"LLM API returned empty or invalid response on attempt {attempt + 1}.")
+            time.sleep(random.uniform(initial_delay, initial_delay * 2))
+            initial_delay *= 2
         
-        print("⚠️ Could not detect gameweek, defaulting to GW1")
-        return 1
-        
-    except Exception as e:
-        print(f"❌ Error in get_latest_gameweek: {e}")
-        return 1
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed on attempt {attempt + 1}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(random.uniform(initial_delay, initial_delay * 2))
+                initial_delay *= 2
+            else:
+                break
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+            break
+
+    # Fallback message (3 items) if all attempts or processing fail
+    return [
+        f"Quick Analysis: Top {position_name} players are performing well.",
+        "Check points, form, and ownership carefully.",
+        "Data loading error or API connection issue."
+    ]
 
 # ==================
-# DATA LOADING
+# CONTEXT PROCESSOR (Existing Code)
 # ==================
-def fetch_data_from_github():
+@app.context_processor
+def inject_global_data():
     """
-    Fetch and process data from GitHub.
-    This is the core function that both scheduled and on-demand refreshes use.
+    Makes current_gw available to ALL Jinja templates (base.html, home.html, etc.).
     """
-    try:
-        latest_gw = get_latest_gameweek()
-        
-        # Construct URLs
-        players_url = f"{GITHUB_BASE}/players.csv"
-        teams_url = f"{GITHUB_BASE}/teams.csv"
-        current_players_url = f"{GITHUB_BASE}/By%20Gameweek/GW{latest_gw}/playerstats.csv"
-        
-        print(f"📥 Loading data from GW{latest_gw}...")
-        start_time = time.time()
-        
-        # Load data from GitHub
-        players_master = pd.read_csv(players_url)
-        teams_df = pd.read_csv(teams_url)
-        current_players = pd.read_csv(current_players_url)
-        
-        # Create team mapping
-        team_mapping = teams_df.set_index('code')[['name', 'short_name', 'elo']].to_dict('index')
-        
-        # Join player data
-        analysis_df = current_players.merge(
-            players_master[['player_id', 'team_code', 'position']], 
-            left_on='id', 
-            right_on='player_id', 
-            how='left'
-        )
-        
-        # Add team names
-        analysis_df['team_name'] = analysis_df['team_code'].map(
-            lambda x: team_mapping.get(x, {}).get('short_name', 'Unknown')
-        )
-        
-        # Calculate points per million
-        analysis_df['points_per_million'] = analysis_df['total_points'] / analysis_df['now_cost']
-        
-        # Store the current gameweek
-        analysis_df['current_gw'] = latest_gw
-        
-        load_time = time.time() - start_time
-        print(f"✅ Data loaded in {load_time:.2f} seconds")
-        
-        return analysis_df, latest_gw
-        
-    except Exception as e:
-        print(f"❌ Error loading data: {e}")
-        return None, None
-
-def load_fpl_data():
-    """
-    Load FPL data with smart caching.
-    Returns cached data if available, otherwise fetches fresh data.
-    """
-    # Try to get cached data first
-    cached_data, cached_gw = cache.get()
-    
-    if cached_data is not None:
-        # We have cached data - check if it's still valid
-        if not cache.should_refresh():
-            return cached_data
-    
-    # Need to fetch fresh data
-    print("🔄 Fetching fresh data from GitHub...")
-    
-    analysis_df, latest_gw = fetch_data_from_github()
-    
-    if analysis_df is not None:
-        cache.update(analysis_df, latest_gw)
-        return analysis_df
-    else:
-        # If fetch failed but we have old cached data, return that
-        if cached_data is not None:
-            print("⚠️ Fetch failed, using stale cached data")
-            return cached_data
-        return pd.DataFrame()
+    gw = cache.current_gw if cache.current_gw else None
+    return dict(current_gw=gw)
 
 # ==================
-# BACKGROUND SCHEDULER
+# BACKGROUND SCHEDULER (UPDATED: Removed LLM cache clear)
 # ==================
-def scheduled_data_refresh():
-    """
-    Background job that runs at 5am and 5pm UTC.
-    Fetches data automatically without user interaction.
-    """
-    now = datetime.now(timezone.utc)
-    print(f"\n{'='*60}")
-    print(f"🔄 SCHEDULED REFRESH triggered at {now.strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    print(f"{'='*60}")
-    
-    analysis_df, latest_gw = fetch_data_from_github()
-    
-    if analysis_df is not None:
-        cache.update(analysis_df, latest_gw)
-        print(f"✅ Scheduled refresh completed successfully for GW{latest_gw}")
-    else:
-        print(f"❌ Scheduled refresh failed")
-    
-    print(f"{'='*60}\n")
-
-# Initialize scheduler
 scheduler = BackgroundScheduler(timezone="UTC")
-
-# Schedule jobs for 5:00 AM and 5:00 PM UTC
 scheduler.add_job(
-    func=scheduled_data_refresh,
+    # LLM cache is now only cleared manually via /llm-refresh-now
+    func=lambda: scheduled_data_refresh(cache), 
     trigger="cron",
     hour=5,
     minute=0,
     id='morning_update',
     name='Morning Data Update (5:00 AM UTC)'
 )
-
 scheduler.add_job(
-    func=scheduled_data_refresh,
+    # LLM cache is now only cleared manually via /llm-refresh-now
+    func=lambda: scheduled_data_refresh(cache),
     trigger="cron",
     hour=17,
     minute=0,
     id='evening_update',
     name='Evening Data Update (5:00 PM UTC)'
 )
-
-# Start the scheduler
 scheduler.start()
 print("🚀 Background scheduler started")
-print("📅 Scheduled updates: 5:00 AM and 5:00 PM UTC")
-
-# Shutdown scheduler when app exits
 atexit.register(lambda: scheduler.shutdown())
 
-# Load initial data on startup (in a try-except to prevent startup failure)
+# Load initial data on startup (UPDATED: Removed LLM cache clear)
 print("\n🔄 Loading initial data on startup...")
 try:
-    initial_data = load_fpl_data()
+    initial_data = load_fpl_data(cache) 
+    # Removed: cache.set('llm_headlines', None)
     if not initial_data.empty:
         print("✅ Initial data loaded successfully")
-    else:
-        print("⚠️ Initial data load returned empty dataframe")
 except Exception as e:
-    print(f"⚠️ Could not load initial data: {e}")
-    print("App will retry on first user request")
+    print(f"⚠️ Could not load initial data: {e}. App will retry on first user request.")
 
 # ==================
 # FLASK ROUTES
@@ -289,159 +185,615 @@ except Exception as e:
 
 @app.route('/')
 def home():
-    """Home page with basic player analysis"""
-    df = load_fpl_data()
+    """
+    New Homepage. Checks for a cached team ID and redirects to the My Team page, 
+    otherwise, it redirects to the form page.
+    """
+    # 1. Check for the cached team ID in the user's browser cookies
+    cached_team_id = request.cookies.get('fpl_team_id')
     
-    if df.empty:
-        return render_template('error.html', message="Could not load FPL data from GitHub")
+    if cached_team_id:
+        # If the ID is found, redirect directly to the My Team view
+        print(f"🏠 Found cached team ID: {cached_team_id}. Redirecting to My Team.")
+        # NOTE: Using a hard-coded redirect string for simplicity, but url_for is often preferred.
+        return redirect(f'/my-team/{cached_team_id}')
+    else:
+        # If no ID is found, render the team ID input form (which currently lives at /my-team)
+        return redirect('/my-team') # Or alternatively: return my_team_form()
+
+@app.route('/analysis-overview')
+def analysis_overview():
+    """
+    Analysis Overview page with player analysis.
+    Uses the new data layer with PlayerDataFrame and view configs.
+    """
     
-    # Get current gameweek for display
-    current_gw = df['current_gw'].iloc[0] if 'current_gw' in df.columns else 'Unknown'
-    
-    # Get top players by position
+    # Initialize empty data structures
     analysis_data = {}
-    positions = ['Goalkeeper', 'Defender', 'Midfielder', 'Forward']
+    overall_top_10_list = []
+    top_10_defensive_contribution = [] 
     
-    for pos in positions:
-        pos_players = df[df['position'] == pos]
-        if len(pos_players) > 0:
-            if pos == 'Goalkeeper':
-                top_players = pos_players.nlargest(5, 'total_points')
-            else:
-                top_players = pos_players.nlargest(8, 'expected_goal_involvements')
+    # Check for cached headlines
+    cached_headlines = cache.get('llm_headlines')
+    if cached_headlines is not None:
+        headlines = cached_headlines
+        print("🧠 Using cached LLM headlines.")
+    else:
+        headlines = {}
+        print("🔄 Generating new LLM headlines...")
+
+    # Load data (now returns PlayerDataFrame)
+    player_df = load_fpl_data(cache)
+    
+    # Check if data is empty
+    if len(player_df) == 0:
+        fallback_max = {
+            'max_points': 1, 'max_ownership': 1, 'max_form': 1, 
+            'max_cs': 1, 'max_xgi': 1, 'max_saves_pm': 1, 
+            'max_ppm': 1, 'max_value_metric': 1, 
+            'max_def_cont': 1, 'max_def_cont_p90': 1
+        }
+        global_max_values = fallback_max
+        positional_max_values = {
+            'Goalkeeper': fallback_max, 
+            'Defender': fallback_max, 
+            'Midfielder': fallback_max, 
+            'Forward': fallback_max
+        }
+        
+        if not headlines:
+            headlines = {
+                'Overall': ["Data not loaded.", "Please check back later.", "Error: Data source empty."], 
+                'Goalkeeper': ["...", "...", "..."], 
+                'Defender': ["...", "...", "..."], 
+                'Midfielder': ["...", "...", "..."], 
+                'Forward': ["...", "...", "..."],
+                'Defensive': ["...", "...", "..."]
+            }
+                          
+        return render_template('analysis_overview.html',
+                               message="Could not load FPL data from GitHub.",
+                               global_max_values=global_max_values,
+                               positional_max_values=positional_max_values,
+                               headlines=headlines)
+
+    # Extract GW info
+    if hasattr(player_df.df, 'attrs') and 'gw_info' in player_df.df.attrs:
+        gw_info = player_df.df.attrs['gw_info']
+        current_gw = gw_info.get('current_gw', 'Unknown')
+        gw_status = gw_info.get('gw_status', '')
+        stats_gw = gw_info.get('stats_gw', current_gw)
+    else:
+        current_gw = player_df.df['current_gw'].iloc[0] if 'current_gw' in player_df.df.columns else 'Unknown'
+        gw_status = ''
+        stats_gw = current_gw
+    
+    # ----------------------------------------------------
+    # Overall Top 10 - Using new system
+    # ----------------------------------------------------
+    overall_top_10 = player_df.top_n(10, 'total_points')
+    overall_top_10_list = overall_top_10.to_display_dict(format_values=False)
+
+    # Apply position mapping and rounding - USE .get() FOR SAFETY
+    for player in overall_top_10_list:
+        # **These lines are correct (inside the loop)**
+        player['position'] = POSITION_MAP.get(player.get('position', ''), 'N/A')
+        player['now_cost'] = player.get('now_cost', 0)
+        
+        # **Move rounding logic INSIDE the loop**
+        if 'expected_goal_involvements' in player and player['expected_goal_involvements'] is not None:
+            player['expected_goal_involvements'] = round(player['expected_goal_involvements'], 2)
+        
+        if 'save_value_per_million' in player and player['save_value_per_million'] is not None:
+            player['save_value_per_million'] = round(player['save_value_per_million'], 2)
+        
+        if 'points_per_million' in player and player['points_per_million'] is not None:
+            player['points_per_million'] = round(player['points_per_million'], 2)
+        
+        # Ensure 'form' key exists before using float(), then round
+        if 'form' in player and player['form'] is not None:
+            # Added protection: ensure it's convertible to float, then round
+            try:
+                player['form'] = round(float(player['form']), 1)
+            except ValueError:
+                player['form'] = 0.0 # Fallback on error
+
+    # Generate headline for Overall if not cached
+    if 'Overall' not in headlines:
+        headlines['Overall'] = generate_analysis_headlines(overall_top_10_list, "Overall Top 10")
+    
+    # ----------------------------------------------------
+    # Defensive Contribution (if available)
+    # ----------------------------------------------------
+    if 'defensive_contribution' in player_df.df.columns:
+        # Filter to players with points
+        players_with_points = PlayerDataFrame(
+            player_df.df[player_df.df['total_points'] > 0].copy()
+        )
+        defensive_top_10 = players_with_points.top_n(10, 'defensive_contribution')
+        top_10_defensive_contribution = defensive_top_10.to_display_dict(format_values=False)
+        
+        for player in top_10_defensive_contribution:
+            player['position'] = POSITION_MAP.get(player.get('position', ''), 'N/A')
+            player['now_cost'] = player.get('now_cost', 0)
             
-            # Convert to list of dictionaries for template
-            analysis_data[pos] = top_players[[
-                'web_name', 'team_name', 'now_cost', 'selected_by_percent', 
-                'total_points', 'expected_goal_involvements', 'points_per_million'
-            ]].round(2).to_dict('records')
+            if 'defensive_contribution' in player and player['defensive_contribution'] is not None:
+                player['defensive_contribution'] = round(player['defensive_contribution'], 1)
+            
+            if 'defensive_contribution_per_90' in player and player['defensive_contribution_per_90'] is not None:
+                player['defensive_contribution_per_90'] = round(player['defensive_contribution_per_90'], 2)
+        
+        if 'Defensive' not in headlines:
+            headlines['Defensive'] = generate_analysis_headlines(top_10_defensive_contribution, "Defensive Contribution")
+    else:
+        if 'Defensive' not in headlines:
+            headlines['Defensive'] = ["Defensive stat column missing.", "Update your data module.", "Table data will be empty."]
     
-    return render_template('home.html', analysis_data=analysis_data, current_gw=current_gw)
+    # ----------------------------------------------------
+    # Calculate Max Values for visualization
+    # ----------------------------------------------------
+    df = player_df.df  # Get underlying DataFrame for calculations
+    
+    global_max_values = {
+        'max_points': df['total_points'].max() if 'total_points' in df.columns else 1,
+        'max_ownership': df['selected_by_percent'].astype(float).max() if 'selected_by_percent' in df.columns else 1,
+        'max_form': df['form'].max() if 'form' in df.columns else 1,
+        'max_cs': df['clean_sheets'].max() if 'clean_sheets' in df.columns else 1,
+        'max_xgi': df[df['position'] != 'Goalkeeper']['expected_goal_involvements'].max() if 'expected_goal_involvements' in df.columns else 1,
+        'max_saves_pm': df[df['position'] == 'Goalkeeper']['save_value_per_million'].max() if 'save_value_per_million' in df.columns else 1,
+        'max_ppm': df['points_per_million'].max() if 'points_per_million' in df.columns else 1,
+        'max_def_cont': df['defensive_contribution'].max() if 'defensive_contribution' in df.columns else 1,
+        'max_def_cont_p90': df['defensive_contribution_per_90'].max() if 'defensive_contribution_per_90' in df.columns else 1,
+    }
+    
+    # Calculate positional max values
+    positional_max_values = {}
+    positions_list = ['Goalkeeper', 'Defender', 'Midfielder', 'Forward']
+    
+    for pos in positions_list:
+        pos_df = df[df['position'] == pos]
+        if not pos_df.empty:
+            pos_maxes = {
+                'max_points': pos_df['total_points'].max() if 'total_points' in pos_df.columns else 1,
+                'max_ownership': pos_df['selected_by_percent'].astype(float).max() if 'selected_by_percent' in pos_df.columns else 1,
+                'max_form': pos_df['form'].max() if 'form' in pos_df.columns else 1,
+                'max_cs': pos_df['clean_sheets'].max() if 'clean_sheets' in pos_df.columns else 1,
+                'max_ppm': pos_df['points_per_million'].max() if 'points_per_million' in pos_df.columns else 1,
+            }
+            if pos == 'Goalkeeper':
+                pos_maxes['max_value_metric'] = pos_df['save_value_per_million'].max() if 'save_value_per_million' in pos_df.columns else 1
+            else:
+                pos_maxes['max_value_metric'] = pos_df['expected_goal_involvements'].max() if 'expected_goal_involvements' in pos_df.columns else 1
+                
+            positional_max_values[pos] = pos_maxes
+        else:
+            positional_max_values[pos] = {
+                'max_points': 1, 'max_ownership': 1, 'max_form': 1, 
+                'max_cs': 1, 'max_ppm': 1, 'max_value_metric': 1
+            }
+
+    # ----------------------------------------------------
+    # Process position sections
+    # ----------------------------------------------------
+    positions = ['Goalkeeper', 'Defender', 'Midfielder', 'Forward']
+
+    for pos in positions:
+        pos_players = player_df.filter_by_position(pos)
+        
+        if len(pos_players) > 0:
+            # Get appropriate view
+            if pos == 'Goalkeeper':
+                view_data = pos_players.get_view('goalkeeper_analysis')
+            else:
+                view_data = pos_players.get_view('outfield_analysis')
+            
+            # Get top 10
+            top_10 = view_data.head(10)
+            player_list = top_10.to_display_dict(format_values=False)
+            
+            # Apply formatting - USE .get() FOR SAFETY
+            for player in player_list:
+                player['position'] = POSITION_MAP.get(player.get('position', ''), 'N/A')
+                player['now_cost'] = player.get('now_cost', 0)
+                
+                if 'expected_goal_involvements' in player and player['expected_goal_involvements'] is not None:
+                    player['expected_goal_involvements'] = round(player['expected_goal_involvements'], 2)
+                
+                if 'save_value_per_million' in player and player['save_value_per_million'] is not None:
+                    player['save_value_per_million'] = round(player['save_value_per_million'], 2)
+                
+                if 'points_per_million' in player and player['points_per_million'] is not None:
+                    player['points_per_million'] = round(player['points_per_million'], 2)
+                
+                if 'form' in player and player['form'] is not None:
+                    player['form'] = round(float(player['form']), 1)
+
+            analysis_data[pos] = player_list
+            
+            # Generate headline if not cached
+            if pos not in headlines:
+                headlines[pos] = generate_analysis_headlines(player_list, pos)
+        else:
+            if pos not in headlines:
+                headlines[pos] = [f"No data for {pos} yet.", "Waiting for FPL data...", "Try a manual refresh."]
+    
+    # Cache the newly generated headlines
+    if cached_headlines is None:
+        cache.set('llm_headlines', headlines)
+        print("✅ New LLM headlines cached.")
+
+    # Render template
+    return render_template('analysis_overview.html', 
+        analysis_data=analysis_data,
+        overall_top_10=overall_top_10_list,  
+        top_10_defensive_contribution=top_10_defensive_contribution,
+        global_max_values=global_max_values, 
+        positional_max_values=positional_max_values,
+        headlines=headlines,
+        current_gw=current_gw,
+        gw_status=gw_status,
+        stats_gw=stats_gw
+    )
 
 @app.route('/position/<position_name>')
 def position_analysis(position_name):
-    """Detailed analysis for a specific position"""
-    df = load_fpl_data()
+    """Detailed analysis for a specific position - using new data layer"""
     
-    if df.empty:
+    player_df = load_fpl_data(cache)
+    
+    if len(player_df) == 0:
         return render_template('error.html', message="Could not load FPL data from GitHub")
     
-    # Get current gameweek for display
-    current_gw = df['current_gw'].iloc[0] if 'current_gw' in df.columns else 'Unknown'
+    current_gw = player_df.df['current_gw'].iloc[0] if 'current_gw' in player_df.df.columns else 'Unknown'
+    
+    # Position name mapping
+    position_map_route = {
+        'Goalkeepers': 'Goalkeeper',
+        'Defenders': 'Defender',
+        'Midfielders': 'Midfielder',
+        'Forwards': 'Forward',
+        'Goalkeeper': 'Goalkeeper',
+        'Defender': 'Defender',
+        'Midfielder': 'Midfielder',
+        'Forward': 'Forward',
+    }
+    
+    normalized_position_name = position_map_route.get(position_name, position_name)
     
     # Filter by position
-    pos_players = df[df['position'] == position_name]
+    pos_players = player_df.filter_by_position(normalized_position_name)
     
     if len(pos_players) == 0:
         return render_template('error.html', message=f"No players found for position: {position_name}")
     
-    # Sort appropriately by position
-    if position_name == 'Goalkeeper':
-        pos_players = pos_players.sort_values('total_points', ascending=False)
-        key_metric = 'total_points'
+    # Determine sort metric
+    if normalized_position_name == 'Goalkeeper':
+        key_metric = 'save_value_per_million'
     else:
-        pos_players = pos_players.sort_values('expected_goal_involvements', ascending=False)
         key_metric = 'expected_goal_involvements'
     
-    # Get top 15 players
-    top_players = pos_players.head(15)
+    # Get top 15
+    top_players = pos_players.top_n(15, key_metric)
     
-    player_data = top_players[[
-        'web_name', 'team_name', 'position', 'now_cost', 'selected_by_percent',
-        'total_points', 'expected_goal_involvements', 'points_per_game', 'points_per_million'
-    ]].round(2).to_dict('records')
+    # Convert to display format
+    player_data = top_players.to_display_dict(format_values=False)
+    
+    # In position_analysis() - the formatting section:
+    for player in player_data:
+        player['position'] = POSITION_MAP.get(player.get('position', ''), 'N/A')
+        player['now_cost'] = player.get('now_cost', 0)
+        
+        if 'expected_goal_involvements' in player and player['expected_goal_involvements'] is not None:
+            player['expected_goal_involvements'] = round(player['expected_goal_involvements'], 2)
+        
+        if 'save_value_per_million' in player and player['save_value_per_million'] is not None:
+            player['save_value_per_million'] = round(player['save_value_per_million'], 2)
+        
+        if 'points_per_million' in player and player['points_per_million'] is not None:
+            player['points_per_million'] = round(player['points_per_million'], 2)
+        
+        if 'points_per_game' in player and player['points_per_game'] is not None:
+            player['points_per_game'] = round(player['points_per_game'], 1)
+    
+    # Calculate max values for this position
+    pos_df = pos_players.df
+    max_values = {
+        'max_points': pos_df['total_points'].max() if 'total_points' in pos_df.columns else 1,
+        'max_ownership': pos_df['selected_by_percent'].astype(float).max() if 'selected_by_percent' in pos_df.columns else 1,
+        'max_form': pos_df['form'].max() if 'form' in pos_df.columns else 1,
+        'max_cs': pos_df['clean_sheets'].max() if 'clean_sheets' in pos_df.columns else 1,
+    }
+
+    if normalized_position_name == 'Goalkeeper':
+        max_values['max_value_metric'] = pos_df['save_value_per_million'].max() if 'save_value_per_million' in pos_df.columns else 1
+    else:
+        max_values['max_value_metric'] = pos_df['expected_goal_involvements'].max() if 'expected_goal_involvements' in pos_df.columns else 1
     
     return render_template('position.html', 
-                         position=position_name, 
+                         position_name=normalized_position_name, 
                          players=player_data, 
                          key_metric=key_metric,
+                         max_values=max_values, 
                          current_gw=current_gw)
 
 @app.route('/differentials')
 def differentials():
-    """Show differential players (low ownership, high performance)"""
-    df = load_fpl_data()
+    """Show differential players using new data layer"""
     
-    if df.empty:
+    player_df = load_fpl_data(cache)
+    
+    if len(player_df) == 0:
         return render_template('error.html', message="Could not load FPL data from GitHub")
     
-    # Get current gameweek for display
-    current_gw = df['current_gw'].iloc[0] if 'current_gw' in df.columns else 'Unknown'
+    current_gw = player_df.df['current_gw'].iloc[0] if 'current_gw' in player_df.df.columns else 'Unknown'
     
-    # Find differentials by position
     differentials_data = {}
     positions = ['Goalkeeper', 'Defender', 'Midfielder', 'Forward']
     
     for pos in positions:
-        pos_players = df[df['position'] == pos]
+        pos_players = player_df.filter_by_position(pos)
+        
+        if len(pos_players) == 0:
+            continue
+        
+        # Apply differential filters
+        df = pos_players.df
         
         if pos == 'Goalkeeper':
-            diff_players = pos_players[
-                (pos_players['selected_by_percent'] < 5) & 
-                (pos_players['total_points'] > 5)
+            # GK: Low ownership, decent points
+            diff_df = df[
+                (df['selected_by_percent'] < 5) & 
+                (df['total_points'] > 5)
             ].nlargest(5, 'total_points')
+            
+            # For GK, value_metric is save_value_per_million
+            value_metric_col = 'save_value_per_million'
         else:
+            # Outfield: Low ownership, good xGI
             min_xgi = 0.3 if pos == 'Defender' else 0.5
-            diff_players = pos_players[
-                (pos_players['selected_by_percent'] < 10) & 
-                (pos_players['expected_goal_involvements'] > min_xgi)
+            diff_df = df[
+                (df['selected_by_percent'] < 10) & 
+                (df['expected_goal_involvements'] > min_xgi)
             ].nlargest(5, 'expected_goal_involvements')
+            
+            # For outfield, value_metric is expected_goal_involvements
+            value_metric_col = 'expected_goal_involvements'
         
-        if len(diff_players) > 0:
-            differentials_data[pos] = diff_players[[
-                'web_name', 'team_name', 'now_cost', 'selected_by_percent',
-                'total_points', 'expected_goal_involvements', 'points_per_million'
-            ]].round(2).to_dict('records')
+        if len(diff_df) > 0:
+            # Convert to PlayerDataFrame and get display format
+            diff_players = PlayerDataFrame(diff_df)
+            player_list = diff_players.to_display_dict(format_values=False)
+            
+            # Apply formatting and ADD value_metric field
+            for player in player_list:
+                player['position'] = POSITION_MAP.get(player.get('position', ''), 'N/A')
+                player['now_cost'] = player.get('now_cost', 0)
+                
+                # Add the appropriate value_metric based on position
+                if pos == 'Goalkeeper':
+                    player['value_metric'] = round(player.get('save_value_per_million', 0), 2)
+                else:
+                    player['value_metric'] = round(player.get('expected_goal_involvements', 0), 2)
+                
+                # Format all fields
+                if 'expected_goal_involvements' in player and player['expected_goal_involvements'] is not None:
+                    player['expected_goal_involvements'] = round(player['expected_goal_involvements'], 2)
+                
+                if 'save_value_per_million' in player and player['save_value_per_million'] is not None:
+                    player['save_value_per_million'] = round(player['save_value_per_million'], 2)
+                
+                if 'points_per_million' in player and player['points_per_million'] is not None:
+                    player['points_per_million'] = round(player['points_per_million'], 2)
+            
+            differentials_data[pos] = player_list
     
-    return render_template('differentials.html', differentials_data=differentials_data, current_gw=current_gw)
+    return render_template('differentials.html', 
+                         differentials_data=differentials_data, 
+                         current_gw=current_gw)
 
 @app.route('/search')
 def search():
     """Search for players by name"""
-    df = load_fpl_data()
+    df = load_fpl_data(cache) 
     
     if df.empty:
         return render_template('error.html', message="Could not load FPL data from GitHub")
     
-    # Get current gameweek for display
     current_gw = df['current_gw'].iloc[0] if 'current_gw' in df.columns else 'Unknown'
     
-    # Get the search query from URL parameters
     query = request.args.get('q', '').strip()
     
     if not query:
-        # If no search query, show the search page with no results
         return render_template('search.html', query='', results=[], current_gw=current_gw)
     
-    # Search for players whose name contains the query (case-insensitive)
     results = df[df['web_name'].str.contains(query, case=False, na=False)]
     
-    # Sort by total points
     results = results.sort_values('total_points', ascending=False)
     
-    # Convert to list of dictionaries for the template
-    player_results = results[[
+    columns_to_select = [
         'web_name', 'team_name', 'position', 'now_cost', 'selected_by_percent',
-        'total_points', 'expected_goal_involvements', 'points_per_game', 'points_per_million'
-    ]].head(20).round(2).to_dict('records')
+        'total_points', 'expected_goal_involvements', 'points_per_game', 
+        'points_per_million', 'save_value_per_million' 
+    ]
+    
+    player_results = results[columns_to_select].head(20).to_dict('records')
+    
+    for player in player_results:
+        player['now_cost'] = player.get('now_cost', 0) 
+        player['expected_goal_involvements'] = round(player.get('expected_goal_involvements', 0), 2)
+        player['save_value_per_million'] = round(player.get('save_value_per_million', 0), 2)
+        player['points_per_million'] = round(player.get('points_per_million', 0), 2)
+        player['points_per_game'] = round(player.get('points_per_game', 0), 1)
+        player['position'] = POS_MAP.get(player.get('position', ''), 'N/A')
     
     return render_template('search.html', query=query, results=player_results, current_gw=current_gw)
 
-# ==================
-# DEBUG/ADMIN ROUTES (Optional)
-# ==================
+@app.route('/my-team')
+def my_team_form():
+    """
+    Show form to enter team ID or handle form submission.
+    This is the target of the redirect from the homepage (/) when no cookie is found.
+    """
+    team_id = request.args.get('team_id')
+    
+    # This block handles the submission of the form itself (e.g., /my-team?team_id=1234)
+    if team_id:
+        return redirect(f'/my-team/{team_id}')
+    
+    # If no ID is provided, just show the blank form
+    return render_template('my_team_form.html')
+
+@app.route('/my-team/<int:team_id>')
+def my_team(team_id):
+    """
+    Display user's FPL team with problem detection, using a perpetual cache.
+    The data is refreshed only via the manual refresh button or if not found.
+    """
+    team_cache_key = f'team_{team_id}'
+    team_data = cache.get(team_cache_key) # Check the cache first
+    
+    # --- 1. Data Fetch and Caching Logic ---
+    if team_data is None:
+        print(f"🔄 Cache miss for team {team_id}. Fetching from FPL API.")
+        team_data = fpl_client.get_my_team_data(team_id) 
+        
+        if not team_data:
+            # If data fetch fails, no cookie is set, and render an error
+            return render_template('error.html', 
+                                 message=f"Could not load team {team_id}. Please check the ID and try again.")
+        
+        # Store the raw team data perpetually (max_age=None or a very large number)
+        # We will use the SmartDataCache's default setting for perpetual storage if max_age is not passed
+        cache.set(team_cache_key, team_data) 
+        print(f"✅ Team data for {team_id} successfully cached.")
+    else:
+        print(f"🧠 Using cached data for team {team_id}.")
+
+    # --- 2. Processing and Rendering Logic (Remains the same) ---
+    starters = [p for p in team_data['team'] if not p['bench_position']]
+    bench = [p for p in team_data['team'] if p['bench_position']]
+    
+    # ... (Rest of processing logic for team_by_position, problems, etc.) ...
+    
+    team_by_position = {
+        'GKP': [p for p in starters if p['position'] == 'GKP'],
+        'DEF': [p for p in starters if p['position'] == 'DEF'],
+        'MID': [p for p in starters if p['position'] == 'MID'],
+        'FWD': [p for p in starters if p['position'] == 'FWD']
+    }
+    
+    problems = []
+    
+    for player in team_data['team']:
+        player_problems = []
+        
+        # Dead Wood: < 2 pts/game AND < 60% minutes
+        if player['points_per_game'] < 2 and player['minutes_pct'] < 60:
+            player_problems.append({
+                'type': 'dead_wood',
+                'severity': 'urgent',
+                'message': f"Dead wood: {player['points_per_game']:.1f} pts/game, {player['minutes_pct']:.0f}% minutes"
+            })
+        
+        # Rotation Risk: < 70% minutes in last 5
+        elif player['minutes_pct'] < 70 and player['minutes_pct'] > 0:
+            player_problems.append({
+                'type': 'rotation_risk',
+                'severity': 'warning',
+                'message': f"Rotation risk: Only {player['minutes_pct']:.0f}% minutes"
+            })
+        
+        # Injury concern
+        if player['chance_of_playing'] and player['chance_of_playing'] < 100:
+            player_problems.append({
+                'type': 'injury',
+                'severity': 'urgent' if player['chance_of_playing'] < 75 else 'warning',
+                'message': f"Injury concern: {player['chance_of_playing']}% chance of playing"
+            })
+        
+        # Poor form
+        if player['form'] < 2 and player['total_points'] > 0:
+            player_problems.append({
+                'type': 'poor_form',
+                'severity': 'warning',
+                'message': f"Poor form: {player['form']} form rating"
+            })
+        
+        if player_problems:
+            player['problems'] = player_problems
+            problems.append({
+                'player': player,
+                'issues': player_problems
+            })
+    
+    problems.sort(key=lambda x: 0 if any(p['severity'] == 'urgent' for p in x['issues']) else 1)
+    
+    # 3. Render and Set Cookie (Existing Logic)
+    rendered_template = render_template('my_team.html', 
+                                         team_data=team_data,
+                                         team_by_position=team_by_position,
+                                         bench=bench,
+                                         problems=problems,
+                                         team_id=team_id)
+    
+    response = make_response(rendered_template)
+    
+    # Set the cookie to remember the team ID for 30 days
+    response.set_cookie('fpl_team_id', str(team_id), max_age=30 * 24 * 3600)
+    # The print statement is optional but good for debugging:
+    # print(f"✅ Successfully set cookie for team ID: {team_id}")
+
+    return response
+
+@app.route('/my-team/refresh/<int:team_id>')
+def refresh_my_team(team_id):
+    """
+    Clears the cached team data for the given team ID using the new cache.delete() 
+    and redirects to the team view, triggering a fresh API call.
+    """
+    team_cache_key = f'team_{team_id}'
+
+    # 🔥 FIX: Use the new dedicated delete method
+    if cache.delete(team_cache_key): 
+        print(f"🔥 Team data for ID {team_id} cleared from cache. Forcing API refresh.")
+    else:
+        print(f"⚠️ Team data for ID {team_id} was not found in cache.")
+
+    # Redirect back to the main team viewing page
+    return redirect(f'/my-team/{team_id}')
 
 @app.route('/refresh-now')
 def manual_refresh():
-    """Manual refresh endpoint for testing"""
-    print("\n🔄 Manual refresh requested by user")
-    scheduled_data_refresh()
-    return "Data refresh triggered! Check console for details.", 200
+    """
+    Manual FPL Data refresh endpoint. 
+    NOTE: LLM headlines must be refreshed via /llm-refresh-now
+    """
+    print("\n🔄 Manual FPL Data refresh requested by user")
+    scheduled_data_refresh(cache) 
+    return "FPL Data refresh triggered! Check console for details.", 200
+
+@app.route('/llm-refresh-now')
+def manual_llm_refresh():
+    """
+    Clears the cached LLM headlines, forcing a regeneration of new headlines
+    on the next visit to the analysis page.
+    """
+    llm_key = 'llm_headlines'
+    
+    if cache.delete(llm_key):
+        message = "✅ LLM headlines cache cleared. New analysis will be generated on next page view."
+        print(f"\n{message}")
+    else:
+        message = "⚠️ LLM headlines were not in the cache, no action taken."
+        print(f"\n{message}")
+        
+    # Redirect to the analysis page to immediately trigger regeneration
+    return redirect(url_for('analysis_overview'))
 
 @app.route('/cache-status')
 def cache_status():
     """Show cache status for debugging"""
-    if cache.is_empty():
+    if cache.is_empty(): 
         return {
             "status": "empty",
             "message": "Cache is empty"
@@ -456,7 +808,8 @@ def cache_status():
         "current_gw": cache.current_gw,
         "last_updated": cache.last_updated.strftime('%Y-%m-%d %H:%M:%S UTC') if cache.last_updated else None,
         "next_update": next_update.strftime('%Y-%m-%d %H:%M:%S UTC'),
-        "time_until_next_update": f"{int(time_until.total_seconds() // 3600)}h {int((time_until.total_seconds() % 3600) // 60)}m"
+        "time_until_next_update": f"{int(time_until.total_seconds() // 3600)}h {int((time_until.total_seconds() % 3600) // 60)}m",
+        "headlines_cached": 'llm_headlines' in cache.cache_items
     }
 
 if __name__ == '__main__':
